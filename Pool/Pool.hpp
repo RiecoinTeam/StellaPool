@@ -88,7 +88,7 @@ constexpr double banThreshold(-7200.);
 constexpr double maxInactivityTime(600.);
 constexpr uint64_t movementsDuration(2592000ULL);
 constexpr uint64_t powcDuration(604800ULL);
-inline const std::string poolSignature("/SP0.9/");
+inline const std::string poolSignature("/SP/");
 class Pool {
 	const std::vector<uint8_t> _scriptPubKey;
 	bool _running;

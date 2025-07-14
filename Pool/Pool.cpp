@@ -214,11 +214,19 @@ uint64_t Pool::_checkPoW(const StratumJob& job, const std::vector<uint8_t>& nOff
 		ERRORMSG("Unknown PoW Version " << job.powVersion << ", please upgrade StellaPool!");
 		return 0U;
 	}
-	const uint8_t* rawOffset(nOffsetV8.data()); // [31-30 Primorial Number|29-14 Primorial Factor|13-2 Primorial Offset|1-0 Reserved/Version]
-	if ((reinterpret_cast<const uint16_t*>(&rawOffset[0])[0] & 65535) != 2)
+	uint64_t nBits64(job.bh.bits);
+	const uint8_t* rawOffset(nOffsetV8.data()); // [31-30 Primorial Number|29-14 Primorial Factor|13-2 Primorial Offset|1-0 Difficulty Offset/Version]
+	const uint16_t offsetFirst16(reinterpret_cast<const uint16_t*>(&rawOffset[0])[0]);
+	if ((offsetFirst16 & 31) != 2)
 		return 0U;
-	const uint32_t difficultyIntegerPart(decodeBits(job.bh.bits, job.powVersion));
-	if (difficultyIntegerPart < 264U) return 0U;
+	
+	if (decodeBits(nBits64, job.powVersion) < 264U) return 0U;
+	if ((offsetFirst16 & 65535U) != 2) {
+		nBits64 += (offsetFirst16 & 65504U) << 8U;
+		if (nBits64 > 4294967295ULL)
+			nBits64 = 4294967295ULL;
+	}
+	const uint32_t difficultyIntegerPart(decodeBits(nBits64, job.powVersion));
 	const uint32_t trailingZeros(difficultyIntegerPart - 264U);
 	mpz_class offsetLimit(1);
 	offsetLimit <<= trailingZeros;
@@ -231,7 +239,7 @@ uint64_t Pool::_checkPoW(const StratumJob& job, const std::vector<uint8_t>& nOff
 	}
 	mpz_import(primorialFactor.get_mpz_t(), 16, -1, sizeof(uint8_t), 0, 0, &rawOffset[14]);
 	mpz_import(primorialOffset.get_mpz_t(), 12, -1, sizeof(uint8_t), 0, 0, &rawOffset[2]);
-	const mpz_class target(job.bh.target(job.powVersion)),
+	const mpz_class target(job.bh.target(job.powVersion, (offsetFirst16 & 65504U) >> 5)),
 	                offset(primorial - (target % primorial) + primorialFactor*primorial + primorialOffset);
 	if (offset >= offsetLimit)
 		return 0U;
@@ -564,7 +572,7 @@ std::pair<std::string, bool> Pool::_processMessage(const std::pair<std::shared_p
 			return {stratumErrorStr(messageId, 20, "Timestamp too late (please check your system clock))"s), true};
 		}
 		const std::vector<uint8_t> nOffsetV8(reverse(hexStrToV8(nOffset)));
-		if (*reinterpret_cast<const uint16_t*>(&nOffsetV8.data()[0]) != 2) {
+		if ((*reinterpret_cast<const uint16_t*>(&nOffsetV8.data()[0]) & 31) != 2) {
 			LOGMSG("Received invalid submission (invalid PoW Version) from " << miner->str());
 			_updatePoints(userId, -4.);
 			_punish(miner->ip, -5.);

@@ -126,14 +126,17 @@ std::vector<uint8_t> BlockHeader::toV8() const {
 	v8.insert(v8.end(), nOffset.begin(), nOffset.end());
 	return v8;
 }
-mpz_class BlockHeader::target(const int32_t powVersion) const {
-	const uint32_t difficultyIntegerPart(decodeBits(bits, powVersion));
+mpz_class BlockHeader::target(const int32_t powVersion, const uint16_t difficultyOffset) const {
+	uint64_t bits64(bits);
+	bits64 += uint64_t{difficultyOffset} << 13ULL;
+	if (bits64 > 4294967295ULL) bits64 = 4294967295ULL;
+	const uint32_t difficultyIntegerPart(decodeBits(bits64, powVersion));
 	uint32_t trailingZeros;
 	const std::array<uint8_t, 32> hash(sha256d(toV8().data(), 80));
 	mpz_class target;
 	if (powVersion == 1) {
 		if (difficultyIntegerPart < 264U) return 0;
-		const uint32_t df(bits & 255U);
+		const uint32_t df(bits64 & 255U);
 		target = 256 + ((10U*df*df*df + 7383U*df*df + 5840720U*df + 3997440U) >> 23U);
 		target <<= 256;
 		mpz_class hashGmp;

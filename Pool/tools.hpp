@@ -85,7 +85,7 @@ struct BlockHeader {
 	std::array<uint8_t, 32> nOffset;
 	
 	std::vector<uint8_t> toV8() const;
-	mpz_class target(const int32_t) const;
+	mpz_class target(const int32_t, const uint16_t) const;
 };
 
 std::array<uint8_t, 32> calculateMerkleRoot(const std::vector<std::array<uint8_t, 32>>&);
