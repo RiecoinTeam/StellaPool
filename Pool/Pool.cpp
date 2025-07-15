@@ -968,7 +968,7 @@ void Pool::_processPayments() {
 void Pool::_fetchJob() {
 	nlohmann::json getblocktemplate, getblocktemplateResult;
 	try {
-		getblocktemplate = _sendRequestToWallet(_curlMain, "getblocktemplate", {{{"rules", {"segwit"}}}});
+		getblocktemplate = _sendRequestToWallet(_curlMain, "getblocktemplate", "[{}]"_json);
 		if (getblocktemplate == nullptr)
 			return;
 		getblocktemplateResult = getblocktemplate["result"];

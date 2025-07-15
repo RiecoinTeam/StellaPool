@@ -16,6 +16,8 @@
 #include "main.hpp"
 #include "tools.hpp"
 
+using nlohmann::literals::operator ""_json;
+
 constexpr uint16_t extraNonce1Length(4U);
 constexpr uint16_t extraNonce2Length(4U);
 struct Miner {
