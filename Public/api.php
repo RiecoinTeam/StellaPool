@@ -1,5 +1,6 @@
-<?php // (c) 2022 Pttn (https://riecoin.dev/en/StellaPool)
-require_once('Stella.php');
+<?php // (c) 2022-present The Riecoin Developers (https://riecoin.xyz/StellaPool/)
+
+require_once('../Backend/Stella.php');
 $stella = new Stella($confPath);
 
 header('Content-Type: application/json; charset=utf-8');

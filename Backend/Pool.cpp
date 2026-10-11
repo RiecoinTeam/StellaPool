@@ -1,4 +1,4 @@
-// (c) 2022-present Pttn (https://riecoin.xyz/StellaPool/)
+// (c) 2022-present The Riecoin Developers (https://riecoin.xyz/StellaPool/)
 
 #include "Pool.hpp"
 
@@ -114,19 +114,9 @@ std::string Round::valuesToString() const {
 	     + ", "s + (timeEnd.has_value() ? std::to_string(timeEnd.value()) : "NULL"s)
 	     + ", "s + (blockHash.has_value() ? ("'"s + blockHash.value() + "'"s) : "NULL"s)
 	     + ", "s + std::to_string(state)
-	     + ", "s + (finder.has_value() ? ("'"s + finder.value() + "'"s) : "NULL"s)
-	     + ", '"s + scoresToJsonString() + "'"s;
+	     + ", "s + (finder.has_value() ? ("'"s + finder.value() + "'"s) : "NULL"s);
 }
-std::string Round::scoresToJsonString() const {
-	std::string str("{\"scores\": [");
-	for (auto it(scores.begin()) ; it != scores.end() ; it++) {
-		str += "{\"miner\": \""s + it->first + "\", \"score\": "s + std::to_string(it->second) + "}"s;
-		if (std::next(it) != scores.end())
-			str += ", "s;
-	}
-	str += "]}\n"s;
-	return str;
-}
+
 void Round::updateInfo(const uint32_t heightEnd0, const uint64_t timeEnd0, const std::string &blockHash0, const std::string &finder0) {
 	heightEnd = heightEnd0;
 	timeEnd = timeEnd0;
@@ -341,7 +331,8 @@ std::pair<std::string, bool> Pool::_processMessage(const std::pair<std::shared_p
 	}
 	catch (std::exception &e) {
 		LOGMSG("Received invalid JSON message from " << miner->str());
-		_punish(miner->ip, -10.);
+		LOGMSG("The invalid JSON message was: " << message.second);
+		_punish(miner->ip, -40.);
 		return {stratumErrorStr("null", 20, "Invalid JSON message"s), true};
 	}
 	try {
@@ -356,12 +347,20 @@ std::pair<std::string, bool> Pool::_processMessage(const std::pair<std::shared_p
 	}
 	catch (std::exception &e) {
 		LOGMSG("Received message with missing or invalid method from " << miner->str());
-		_punish(miner->ip, -10.);
+		_punish(miner->ip, -40.);
 		return {stratumErrorStr(messageId, 20, "Missing or invalid method"s), true};
 	}
 	if (method == "mining.subscribe") {
 		miner->state = Miner::State::SUBSCRIBED;
-		LOGMSG("Subscribed " << miner->str());
+		std::string userAgent;
+		try {
+			userAgent = jsonMessage["params"][0];
+			LOGMSG("Subscribed " << miner->str() << ", User Agent " << userAgent);
+		}
+		catch (std::exception &e) {
+			LOGMSG("Subscribed " << miner->str()) << ", No User Agent Provided" << std::endl;
+		}
+		
 		return {stratumResponseStr(messageId, "[[[\"mining.notify\", \""s + miner->extraNonce1 + "\"]],\""s + miner->extraNonce1 + "\", "s + std::to_string(extraNonce2Length) + "]"s), false};
 	}
 	else if (method == "mining.authorize") {
@@ -410,7 +409,8 @@ std::pair<std::string, bool> Pool::_processMessage(const std::pair<std::shared_p
 							return {stratumErrorStr(messageId, 20, "Token is not a hex string"s), true};
 						}
 						const std::vector<uint8_t> tokenV8(hexStrToV8(password));
-						std::shared_ptr<sql::ResultSet> sqlResult2(database.executeQuery("SELECT userId FROM Tokens WHERE hash = 0x"s + v8ToHexStr(a8ToV8(sha256(tokenV8.data(), tokenV8.size())))));
+						const auto tokenHash(v8ToHexStr(a8ToV8(sha256(tokenV8.data(), tokenV8.size()))));
+						std::shared_ptr<sql::ResultSet> sqlResult2(database.executeQuery("SELECT userId FROM Tokens WHERE hash = 0x"s + tokenHash));
 						if (sqlResult2->next()) {
 							const uint64_t tokenUserId(sqlResult2->getUInt64("userId"));
 							if (userId != tokenUserId) {
@@ -421,6 +421,7 @@ std::pair<std::string, bool> Pool::_processMessage(const std::pair<std::shared_p
 							else {
 								miner->userId = userId;
 								miner->username = username;
+								miner->tokenHash = tokenHash;
 								miner->state = Miner::State::AUTHORIZED;
 								LOGMSG("Authorized " << miner->str() << "; user " << miner->username << ", Id " << userId);
 								return {stratumResponseStr(messageId, "true") + _generateMiningNotify(true) + "{\"id\": null, \"method\": \"client.show_message\", \"params\": [\"Hello "s + miner->username + ", Happy Mining!\"]}\n"s, false};
@@ -428,8 +429,8 @@ std::pair<std::string, bool> Pool::_processMessage(const std::pair<std::shared_p
 						}
 						else {
 							LOGMSG("Not authorizing (token not found) " << miner->str());
-							_punish(miner->ip, -2.);
-							return {stratumErrorStr(messageId, 20, "Token not found"s), true};
+							_punish(miner->ip, -1.);
+							return {stratumErrorStr(messageId, 20, "Token not found - check that it has not expired, generate a new one if needed"s), true};
 						}
 					}
 					else {
@@ -479,7 +480,6 @@ std::pair<std::string, bool> Pool::_processMessage(const std::pair<std::shared_p
 			_punish(miner->ip, -5.);
 			return {stratumErrorStr(messageId, 24, "Unauthorized worker"s), true};
 		}
-		const std::string userId(miner->userId.has_value() ? std::to_string(miner->userId.value()) : miner->username);
 		std::string username, id, extranonce2, nTime, nOffset;
 		try {
 			username = jsonMessage["params"][0];
@@ -490,37 +490,37 @@ std::pair<std::string, bool> Pool::_processMessage(const std::pair<std::shared_p
 		}
 		catch (std::exception &e) {
 			LOGMSG("Received invalid submission (invalid parameters) from " << miner->str());
-			_updatePoints(userId, -4.);
+			_updatePoints(miner, -4.);
 			_punish(miner->ip, -5.);
 			return {stratumErrorStr(messageId, 20, "Invalid params"s), true};
 		}
 		if (username != miner->username) {
 			LOGMSG("Received invalid submission (wrong username) from " << miner->str());
-			_updatePoints(userId, -4.);
+			_updatePoints(miner, -4.);
 			_punish(miner->ip, -5.);
 			return {stratumErrorStr(messageId, 20, "Wrong username"s), true};
 		}
 		if (!isHexStrOfSize(extranonce2, 2U*extraNonce2Length)) {
 			LOGMSG("Received invalid submission (invalid Extra Nonce 2) from " << miner->str());
-			_updatePoints(userId, -4.);
+			_updatePoints(miner, -4.);
 			_punish(miner->ip, -5.);
 			return {stratumErrorStr(messageId, 20, "Invalid Extra Nonce 2 (must be "s + std::to_string(2U*extraNonce2Length) + " hex digits"s), true};
 		}
 		if (!isHexStr(nTime)) {
 			LOGMSG("Received invalid submission (invalid nTime) from " << miner->str());
-			_updatePoints(userId, -4.);
+			_updatePoints(miner, -4.);
 			_punish(miner->ip, -5.);
 			return {stratumErrorStr(messageId, 20, "Invalid nTime (must be a hex str)"s), true};
 		}
 		if (!isHexStrOfSize(nOffset, 64)) {
 			LOGMSG("Received invalid submission (invalid nOffset) from " << miner->str());
-			_updatePoints(userId, -4.);
+			_updatePoints(miner, -4.);
 			_punish(miner->ip, -5.);
 			return {stratumErrorStr(messageId, 20, "Invalid nTime (Invalid nOffset (must be 64 hex digits)"s), true};
 		}
 		if (_roundOffsets.find(nOffset) != _roundOffsets.end()) {
 			LOGMSG("Received invalid submission (duplicate share) from " << miner->str());
-			_updatePoints(userId, -8.);
+			_updatePoints(miner, -8.);
 			_punish(miner->ip, -120.);
 			return {stratumErrorStr(messageId, 22, "Duplicate share"s), true};
 		}
@@ -545,7 +545,7 @@ std::pair<std::string, bool> Pool::_processMessage(const std::pair<std::shared_p
 		}
 		if (!jobFound) {
 			// LOGMSG("Received invalid submission (job not found) from " << miner->str());
-			_updatePoints(userId, -2.);
+			_updatePoints(miner, -2.);
 			_punish(miner->ip, -2.);
 			return {stratumErrorStr(messageId, 21, "Job not found"s), false};
 		}
@@ -561,20 +561,20 @@ std::pair<std::string, bool> Pool::_processMessage(const std::pair<std::shared_p
 		}
 		if (shareTimestamp < shareJob.bh.curtime) {
 			LOGMSG("Received invalid submission (timestamp too early) from " << miner->str());
-			_updatePoints(userId, -4.);
+			_updatePoints(miner, -4.);
 			_punish(miner->ip, -5.);
 			return {stratumErrorStr(messageId, 20, "Timestamp too early (please check your system clock)"s), true};
 		}
 		else if (shareTimestamp > nowU64() + 5) {
 			LOGMSG("Received invalid submission (timestamp too late) from " << miner->str());
-			_updatePoints(userId, -4.);
+			_updatePoints(miner, -4.);
 			_punish(miner->ip, -5.);
 			return {stratumErrorStr(messageId, 20, "Timestamp too late (please check your system clock))"s), true};
 		}
 		const std::vector<uint8_t> nOffsetV8(reverse(hexStrToV8(nOffset)));
 		if ((*reinterpret_cast<const uint16_t*>(&nOffsetV8.data()[0]) & 31) != 2) {
 			LOGMSG("Received invalid submission (invalid PoW Version) from " << miner->str());
-			_updatePoints(userId, -4.);
+			_updatePoints(miner, -4.);
 			_punish(miner->ip, -5.);
 			return {stratumErrorStr(messageId, 20, "Invalid PoW Version"s), true};
 		}
@@ -582,19 +582,24 @@ std::pair<std::string, bool> Pool::_processMessage(const std::pair<std::shared_p
 		const uint64_t sharePrimeCount(_checkPoW(shareJob, nOffsetV8)), sharePrimeCountMin(std::max(4ULL, shareJob.acceptedPatterns[0].size() - 2ULL));
 		if (sharePrimeCount < sharePrimeCountMin) {
 			LOGMSG("Received invalid submission (too low Share Prime Count) from " << miner->str());
-			_updatePoints(userId, -8.);
+			_updatePoints(miner, -8.);
 			_punish(miner->ip, -120.);
 			return {stratumErrorStr(messageId, 23, "Received a "s + std::to_string(sharePrimeCount) + "-share, "s + std::to_string(sharePrimeCountMin) + "-shares or better expected"s), true};
 		}
 		_roundOffsets.insert(nOffset);
-		_updatePoints(userId, 1.);
 		miner->latestShareTp = std::chrono::steady_clock::now();
 		if (sharePrimeCount > 5ULL) {
 			LOGMSG("Accepted " << sharePrimeCount << "-share from " << miner->str() << " (" << miner->username << ")");
-			_punish(miner->ip, 60.);
+			_punish(miner->ip, 120.);
 		}
+		if (sharePrimeCount == 4ULL)
+			_updatePoints(miner, 0.125);
+		else if (sharePrimeCount == 5ULL)
+			_updatePoints(miner, 1.);
+		else if (sharePrimeCount == 6ULL)
+			_updatePoints(miner, 8.);
 		if (sharePrimeCount >= shareJob.acceptedPatterns[0].size()) {
-			_updatePoints(userId, 64.);
+			_updatePoints(miner, 64.);
 			LOGMSG("Submitting block with " << shareJob.txHashes.size() << " transaction(s) (including coinbase)...");
 			shareJob.transactionsHex = v8ToHexStr(shareJob.coinBaseGen(miner->extraNonce1, extranonce2)) + shareJob.transactionsHex;
 			BlockHeader bh(shareJob.bh);
@@ -622,7 +627,7 @@ std::pair<std::string, bool> Pool::_processMessage(const std::pair<std::shared_p
 				try {
 					blockHash = _sendRequestToWallet(_curlMain, "getblockhash", {shareJob.height})["result"];
 					const std::lock_guard lock(_roundUpdateMutex);
-					_endCurrentRound(shareJob.height, blockHash, userId);
+					_endCurrentRound(shareJob.height, blockHash, miner);
 					_startNewRound(shareJob.height + 1);
 				}
 				catch (std::exception &e) {
@@ -648,7 +653,7 @@ std::pair<std::string, bool> Pool::_processMessage(const std::pair<std::shared_p
 void Pool::_startNewRound(const uint32_t heightStart) {
 	try {
 		Round r{.id = _currentRound.id + 1, .heightStart = heightStart, .heightEnd = {}, .timeStart = nowU64(), .timeEnd = {}, .blockHash = {}, .state = 0U, .finder = {}, .scores = {}};
-		database.execute("INSERT INTO Rounds VALUES ("s + r.valuesToString() + ");"s);
+		database.execute("INSERT INTO Rounds(id, heightStart, heightEnd, timeStart, timeEnd, blockHash, state, finder) VALUES ("s + r.valuesToString() + ");"s);
 		_currentRound = r;
 		_roundOffsets.clear();
 	}
@@ -656,33 +661,43 @@ void Pool::_startNewRound(const uint32_t heightStart) {
 		throw e;
 	}
 }
-void Pool::_endCurrentRound(const uint32_t heightEnd, const std::string &blockHash, const std::string &finder) {
+void Pool::_endCurrentRound(const uint32_t heightEnd, const std::string &blockHash, const std::shared_ptr<Miner> &finder) {
 	try {
-		_currentRound.updateInfo(heightEnd, nowU64(), blockHash, finder);
-		database.execute("UPDATE Rounds SET heightEnd = "s + std::to_string(_currentRound.heightEnd.value()) + ", timeEnd = "s + std::to_string(_currentRound.timeEnd.value()) + ", blockHash = '"s + _currentRound.blockHash.value() + "', finder = '"s + _currentRound.finder.value() + "', scores = '"s + _currentRound.scoresToJsonString() + "' WHERE id = "s + std::to_string(_currentRound.id));
+		const std::string userId(finder->userId.has_value() ? std::to_string(finder->userId.value()) : finder->username);
+		_currentRound.updateInfo(heightEnd, nowU64(), blockHash, userId);
+		_updateRoundPoints();
+		database.execute("UPDATE Rounds SET heightEnd = "s + std::to_string(_currentRound.heightEnd.value()) + ", timeEnd = "s + std::to_string(_currentRound.timeEnd.value()) + ", blockHash = '"s + _currentRound.blockHash.value() + "', finder = '"s + _currentRound.finder.value() + "' WHERE id = "s + std::to_string(_currentRound.id));
 	}
 	catch (sql::SQLException &e) {
 		throw e;
 	}
 }
-std::map<std::string, double> Pool::_decodeScores(const std::string &scoresJsonString) {
-	try {
-		const nlohmann::json jsonData(nlohmann::json::parse(scoresJsonString));
-		std::map<std::string, double> shareData;
-		for (const auto &minerShareData : jsonData["scores"])
-			shareData[minerShareData["miner"]] = minerShareData["score"];
-		return shareData;
-	}
-	catch (std::exception &e) {
-		ERRORMSG("Could not extract scores: " << e.what());
-		return {};
-	}
-}
 
-void Pool::_updatePoints(const std::string &userId, const double points) {
+void Pool::_updatePoints(const std::shared_ptr<Miner> &miner, const double points) {
+	const std::string userId(miner->userId.has_value() ? std::to_string(miner->userId.value()) : miner->username);
 	_currentRound.updatePoints(userId, points);
-	const std::lock_guard lock(_recentSharesMutex);
+	const std::lock_guard lock(_recentStatsMutex);
 	_recentShares.push_back(Share{nowU64(), userId, points});
+	
+	
+	//const std::lock_guard lock(_recentStatsMutex);
+	auto timestampFloor(nowU64());
+	timestampFloor = timestampFloor - (timestampFloor % recentStatsResolution);
+	auto itTimestamp(_recentStats.find(timestampFloor));
+	if (itTimestamp != _recentStats.end()) {
+		auto itToken(itTimestamp->second.find(miner->tokenHash));
+		if (itToken != itTimestamp->second.end()) {
+			if (points > 0.)
+				itTimestamp->second[miner->tokenHash].valid++;
+			else
+				itTimestamp->second[miner->tokenHash].invalid++;
+			itTimestamp->second[miner->tokenHash].points += points;
+		}
+		else
+			_recentStats[timestampFloor][miner->tokenHash] = points > 0. ? RecentStatsEntry{1ULL, 0ULL, points} : RecentStatsEntry{0ULL, 1ULL, points};
+	}
+	else
+		_recentStats[timestampFloor][miner->tokenHash] = points > 0. ? RecentStatsEntry{1ULL, 0ULL, points} : RecentStatsEntry{0ULL, 1ULL, points};
 }
 void Pool::_punish(const std::string &ip, const double points) {
 	if (points < 0.) {
@@ -702,6 +717,11 @@ void Pool::_punish(const std::string &ip, const double points) {
 			}
 		}
 	}
+	else if (points > 0.) {
+		auto badIpIt(_badIps.find(ip));
+		if (badIpIt != _badIps.end())
+			badIpIt->second += points;
+	}
 }
 bool Pool::_isBanned(const std::string &ip) {
 	const auto badIpIt(_badIps.find(ip));
@@ -709,28 +729,68 @@ bool Pool::_isBanned(const std::string &ip) {
 	else return badIpIt->second <= banThreshold;
 }
 
+void Pool::_updateRoundPoints() {
+	std::string queries("START TRANSACTION; DELETE FROM RoundScores WHERE roundId = "s + std::to_string(_currentRound.id) + ";"s);
+	queries += "INSERT INTO RoundScores (roundId, miner, points) VALUES "s;
+	for (auto it(_currentRound.scores.begin()) ; it != _currentRound.scores.end() ; it++) {
+		queries += "("s + std::to_string(_currentRound.id) + ", '"s + it->first + "', "s + std::to_string(it->second) + ")"s;
+		if (std::next(it) != _currentRound.scores.end()) queries += ","s;
+	}
+	queries += ";"s;
+	queries += "COMMIT;"s;
+	database.execute(queries);
+}
+
 void Pool::_updateDatabase() {
 	CURL *curlDatabaseUpdater(curl_easy_init());
 	std::chrono::time_point<std::chrono::steady_clock> latestDbUpdateTp(std::chrono::steady_clock::now());
 	while (_running) {
-		LOGMSG("Updating database...");
+		// LOGMSG("Updating database...");
 		try {
-			const std::lock_guard roundUpdateLock(_roundUpdateMutex);
-			database.execute("UPDATE Rounds SET scores = '"s + _currentRound.scoresToJsonString() + "' WHERE id = "s + std::to_string(_currentRound.id) + ";"s);
-			_roundUpdateMutex.unlock();
-			const std::lock_guard recentSharesLock(_recentSharesMutex);
-			std::string queries("START TRANSACTION; DELETE FROM SharesRecent WHERE time < "s + std::to_string(nowU64() - 3600) + ";"s);
-			if (_recentShares.size() > 0) {
-				queries += "INSERT INTO SharesRecent (time, finder, points) VALUES "s;
-				for (uint64_t i(0) ; i < _recentShares.size() ; i++) {
-					queries += "("s + std::to_string(_recentShares[i].timestamp) + ", '"s + _recentShares[i].finder + "', "s + std::to_string(_recentShares[i].points) + ")"s;
-					if (i + 1 < _recentShares.size()) queries += ","s;
-				}
-				queries += ";"s;
+			{
+				const std::lock_guard roundUpdateLock(_roundUpdateMutex);
+				_updateRoundPoints();
+				_roundUpdateMutex.unlock();
 			}
+			{
+				const std::lock_guard recentSharesLock(_recentStatsMutex);
+				std::string queries("START TRANSACTION; DELETE FROM SharesRecent WHERE time < "s + std::to_string(nowU64() - 3600) + ";"s);
+				if (_recentShares.size() > 0) {
+					queries += "INSERT INTO SharesRecent (time, finder, points) VALUES "s;
+					for (uint64_t i(0) ; i < _recentShares.size() ; i++) {
+						queries += "("s + std::to_string(_recentShares[i].timestamp) + ", '"s + _recentShares[i].finder + "', "s + std::to_string(_recentShares[i].points) + ")"s;
+						if (i + 1 < _recentShares.size()) queries += ","s;
+					}
+					queries += ";"s;
+				}
+				queries += "COMMIT;"s;
+				database.execute(queries);
+				_recentShares.clear();
+			}
+			auto timestampFloor(nowU64());
+			timestampFloor = timestampFloor - (timestampFloor % recentStatsResolution);
+			std::string queries("START TRANSACTION; DELETE FROM RecentStats WHERE time < "s + std::to_string(timestampFloor - recentStatsRange) + ";"s);
+			if (_recentStats.size() > 0) {
+				// LOGMSG("Updating Recent Stats...");
+				bool insertNewEntries(false);
+				std::string insertionQuery("INSERT INTO RecentStats (time, tokenHash, valid, invalid, points) VALUES "s);
+				for (const auto &entriesTime : _recentStats) {
+					if (entriesTime.first < timestampFloor) {
+						for (const auto &entry : entriesTime.second) {
+							insertNewEntries = true;
+							insertionQuery += "("s + std::to_string(entriesTime.first) + ", 0x"s + entry.first + ", "s + std::to_string(entry.second.valid) + ", "s + std::to_string(entry.second.invalid) + ", "s + std::to_string(entry.second.points) + "),"s;
+						}
+					}
+				}
+				insertionQuery.back() = ';';
+				if (insertNewEntries) {
+					queries += insertionQuery;
+					std::erase_if(_recentStats, [&timestampFloor](const auto& entriesTime) {return entriesTime.first < timestampFloor;});
+ 				}
+ 			}
+			
 			queries += "COMMIT;"s;
 			database.execute(queries);
-			_recentShares.clear();
 		}
 		catch (sql::SQLException &e) {
 			SQLERRORMSG("Could not update the scores or recent shares, can be ignored unless it occurs frequently");
@@ -738,7 +798,7 @@ void Pool::_updateDatabase() {
 		
 		std::shared_ptr<sql::ResultSet> sqlResult;
 		try {
-			sqlResult = database.executeQuery("SELECT id, blockHash, scores FROM Rounds WHERE blockHash IS NOT NULL AND state = 0 ORDER BY id ASC;");
+			sqlResult = database.executeQuery("SELECT id, blockHash FROM Rounds WHERE blockHash IS NOT NULL AND state = 0 ORDER BY id ASC;");
 			std::string queries("START TRANSACTION;"s);
 			while (sqlResult->next()) {
 				const std::string blockHash(sqlResult->getString("blockHash"));
@@ -767,10 +827,14 @@ void Pool::_updateDatabase() {
 					continue;
 				}
 				else if (confirmations >= configuration.options().poolRequiredConfirmations) {
-					const double rewardNet((1. - configuration.options().poolFee)*reward);
+					const double rewardNet((1. - configuration.options().poolFee)*reward), fee(reward - rewardNet);
 					LOGMSG("Block found in Round " << roundId << " now has enough confirmations, distributing " << amountStr(rewardNet) << " RIC to miners...");
-					const std::map<std::string, double> scores(_decodeScores(sqlResult->getString("scores")));
+					std::map<std::string, double> scores;
+					std::shared_ptr<sql::ResultSet> sqlResultRoundScores(database.executeQuery("SELECT miner, points FROM RoundScores WHERE roundId = " + std::to_string(roundId) + ";"));
+					while (sqlResultRoundScores->next())
+						scores[sqlResultRoundScores->getString("miner")] = sqlResultRoundScores->getDouble("points");
 					const double totalScore(getScoreTotal(scores));
+					queries += "INSERT INTO RiecoinMovements (time, value, userId, comment) VALUES ("s + std::to_string(nowU64()) + ", "s + amountStr(fee) + ", 1, 'Fee for Round "s + std::to_string(roundId) + "');"s;
 					for (const auto &scoreEntry : scores) {
 						std::optional<uint64_t> userId;
 						bool registeredUser;
@@ -788,9 +852,8 @@ void Pool::_updateDatabase() {
 								if (sqlResult2->next()) {
 									const std::string username(sqlResult2->getString("username"));
 									const double powCredits(scoreEntry.second/totalScore);
-									queries += "INSERT INTO RiecoinMovements (time, value, userId, comment) VALUES ("s + std::to_string(nowU64()) + ", "s + std::to_string(rewardNetMiner) + ", "s + std::to_string(userId.value()) + ", 'Payout for Round "s + std::to_string(roundId) + "');"s;
+									queries += "INSERT INTO RiecoinMovements (time, value, userId, comment) VALUES ("s + std::to_string(nowU64()) + ", "s + amountStr(rewardNetMiner) + ", "s + std::to_string(userId.value()) + ", 'Payout for Round "s + std::to_string(roundId) + "');"s;
 									queries += "INSERT INTO PoWcMovements (time, value, userId, comment) VALUES ("s + std::to_string(nowU64()) + ", "s + std::to_string(powCredits) + ", "s + std::to_string(userId.value()) + ", 'PoW Credits for Round "s + std::to_string(roundId) + "');"s;
-									queries += "UPDATE Users SET balance = balance + "s + std::to_string(rewardNetMiner) + " WHERE id = "s + std::to_string(userId.value()) + ";"s;
 									queries += "INSERT INTO PoWc (expiration, amount, userId) VALUES ("s + std::to_string(nowU64() + powcDuration) + ", "s + std::to_string(powCredits) + ", "s + std::to_string(userId.value()) + ");"s;
 									LOGMSG("\t" << amountStr(rewardNetMiner) << " RIC and " << powCredits << " PoWc to " << username << " (User " << userId.value() << ")");
 								}
@@ -804,7 +867,7 @@ void Pool::_updateDatabase() {
 						}
 						else {
 							const std::string address(scoreEntry.first);
-							queries += "INSERT INTO RiecoinMovements (time, value, address, comment) VALUES ("s + std::to_string(nowU64()) + ", "s + std::to_string(rewardNetMiner) + ", '"s + address + "', 'Payout for Round "s + std::to_string(roundId) + "');"s;
+							queries += "INSERT INTO RiecoinMovements (time, value, address, comment) VALUES ("s + std::to_string(nowU64()) + ", "s + amountStr(rewardNetMiner) + ", '"s + address + "', 'Payout for Round "s + std::to_string(roundId) + "');"s;
 							LOGMSG("\t" << amountStr(rewardNetMiner) << " RIC to " << scoreEntry.first);
 						}
 					}
@@ -816,25 +879,6 @@ void Pool::_updateDatabase() {
 		}
 		catch (sql::SQLException &e) {
 			SQLERRORMSG("Something went wrong while generating the payouts and PoW Credits, it will be attempted again, no manual intervention needed unless it keeps failing");
-		}
-		
-		try {
-			database.execute("DELETE FROM Sessions WHERE expiration <= "s + std::to_string(nowU64()) + ";"s);
-			database.execute("DELETE FROM Tokens WHERE expiration <= "s + std::to_string(nowU64()) + ";"s);
-			database.execute("DELETE FROM PoWc WHERE expiration <= "s + std::to_string(nowU64()) + ";"s);
-		}
-		catch (sql::SQLException &e) {
-			SQLERRORMSG("Could not delete expired sessions, tokens or PoWc, it will be attempted again, no manual intervention needed unless it keeps failing");
-		}
-		
-		try {
-			const uint64_t expirationTime(nowU64() - movementsDuration);
-			database.execute("DELETE FROM RiecoinMovements WHERE time <= "s + std::to_string(expirationTime) + ";"s);
-			database.execute("DELETE FROM PoWcMovements WHERE time <= "s + std::to_string(expirationTime) + ";"s);
-			database.execute("DELETE FROM Withdrawals WHERE time <= "s + std::to_string(expirationTime) + ";"s);
-		}
-		catch (sql::SQLException &e) {
-			SQLERRORMSG("Could not delete old RIC/PoWc movements or withdrawals, it will be attempted again, no manual intervention needed unless it keeps failing");
 		}
 		
 		for (auto it(_badIps.begin()) ; it != _badIps.end() ; it++) {
@@ -908,7 +952,7 @@ void Pool::_processPayments() {
 		}
 		
 		std::string query("START TRANSACTION;");
-		std::map<std::string, double> outputs;
+		std::map<std::string, std::string> outputs;
 		while (sqlResult->next()) {
 			try {
 				const uint64_t id(sqlResult->getUInt64("id"));
@@ -917,11 +961,16 @@ void Pool::_processPayments() {
 				LOGMSG("Processing withdrawal " << id << " of " << amountStr(amount) << " RIC to " << address << "...");
 				query += "UPDATE Withdrawals SET state = 3 WHERE id = "s + std::to_string(id) + ";"s;
 				auto payoutIt(outputs.find(address)); // Merge outputs to same Address
-				if (payoutIt != outputs.end())
-					payoutIt->second += amount;
-				else
-					outputs[address] = amount;
-				outputs[address] = std::floor(1e8*outputs[address])/1e8; // SendMany does not work if there are more than 8 decimal digits :|, round down
+				if (payoutIt != outputs.end()) {
+					std::ostringstream oss;
+					oss << FIXED(8) << (std::stod(payoutIt->second) + amount);
+					payoutIt->second = oss.str();
+				}
+				else {
+					std::ostringstream oss;
+					oss << FIXED(8) << amount;
+					outputs[address] = oss.str();
+				}
 			}
 			catch (sql::SQLException &e) {
 				SQLERRORMSG("Something went wrong while processing a withdrawal, it will be attempted again, no manual intervention needed unless it keeps failing");
@@ -942,14 +991,16 @@ void Pool::_processPayments() {
 		if (outputs.size() > 0) {
 			LOGMSG("Creating transaction with " << outputs.size() << " output(s) (excluding change)...");
 			std::string txId;
+			nlohmann::json sendmany;
 			try {
-				auto sendmany(_sendRequestToWallet(curlPaymentProcessor, "sendmany", {outputs, "StellaPool Withdrawal"}));
+				sendmany = _sendRequestToWallet(curlPaymentProcessor, "sendmany", {outputs, "StellaPool Withdrawal"});
 				txId = sendmany["result"];
 				database.execute("UPDATE Withdrawals SET state = 1, txid = '"s + txId + "' WHERE state = 3"s);
 				LOGMSG("Successfully sent transaction " << txId);
 			}
 			catch (const std::exception &e) {
 				ERRORMSG("Could not send payouts, you may have to do it manually - " << e.what());
+				std::cout << "Received: " << sendmany.dump() << std::endl;
 				try {
 					database.execute("UPDATE Withdrawals SET state = 4 WHERE state = 3"s);
 				}
@@ -1103,7 +1154,7 @@ void Pool::run() {
 	}
 	
 	LOGMSG("Loading current round...");
-	std::shared_ptr<sql::ResultSet> sqlResult;
+	std::shared_ptr<sql::ResultSet> sqlResult, sqlResultRoundScores;
 	try {
 		sqlResult = database.executeQuery("SELECT * FROM Rounds ORDER BY id DESC LIMIT 1;");
 	}
@@ -1128,7 +1179,12 @@ void Pool::run() {
 			r.state = sqlResult->getUInt("state");
 			r.finder = sqlResult->getString("finder");
 			if (r.finder.value() == "") r.finder = std::nullopt;
-			r.scores = _decodeScores(sqlResult->getString("scores"));
+			
+			sqlResultRoundScores = database.executeQuery("SELECT miner, points FROM RoundScores WHERE roundId = " + std::to_string(r.id ) + ";");
+			std::map<std::string, double> shareData;
+			while (sqlResultRoundScores->next())
+				shareData[sqlResultRoundScores->getString("miner")] = sqlResultRoundScores->getDouble("points");
+			r.scores = shareData;
 		}
 		catch (sql::SQLException &e) {
 			SQLERRORMSG("Invalid round");

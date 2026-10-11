@@ -1,5 +1,4 @@
-// (c) 2018-present Pttn (https://riecoin.xyz/StellaPool/)
-// Lots of code taken from rieMiner (https://riecoin.xyz/rieMiner).
+// (c) 2018-present The Riecoin Developers (https://riecoin.xyz/StellaPool/)
 
 #include "tools.hpp"
 

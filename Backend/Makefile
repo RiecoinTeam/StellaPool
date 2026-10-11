@@ -1,5 +1,5 @@
 CXX    = g++
-CFLAGS = -Wall -Wextra -std=c++20 -O3 -march=native
+CFLAGS = -Wall -Wextra -std=c++23 -O3 -march=native
 LIBS   = -pthread -lcurl -lgmpxx -lgmp -lmysqlcppconn
 HPP    = main.hpp Pool.hpp Pool.hpp tools.hpp
 

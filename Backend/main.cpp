@@ -1,4 +1,4 @@
-// (c) 2022-present Pttn (https://riecoin.xyz/StellaPool/)
+// (c) 2022-present The Riecoin Developers (https://riecoin.xyz/StellaPool/)
 
 #include <nlohmann/json.hpp>
 #include <signal.h>
@@ -79,7 +79,7 @@ bool Configuration::parse(const int argc, char** argv) {
 		}
 		else if (key == "WithdrawalAutomaticThreshold") {
 			_options.withdrawalAutomaticThreshold = std::stod(value);
-			if (_options.withdrawalAutomaticThreshold < 1.) _options.withdrawalAutomaticThreshold = 1.;
+			if (_options.withdrawalAutomaticThreshold < 0.1) _options.withdrawalAutomaticThreshold = 0.1;
 			if (_options.withdrawalAutomaticThreshold > 50.) _options.withdrawalAutomaticThreshold = 50.;
 		}
 		else if (key == "WithdrawalProcessingInterval") {
@@ -153,8 +153,8 @@ int main(int argc, char** argv) {
 	SIGINTHandler.sa_flags = 0;
 	sigaction(SIGINT, &SIGINTHandler, NULL);
 	
-	std::cout << versionString << ", Riecoin Pool by Pttn" << std::endl;
-	std::cout << "Project page: https://riecoin.dev/en/StellaPool" << std::endl;
+	std::cout << versionString << "" << std::endl;
+	std::cout << "Project page: https://riecoin.xyz/StellaPool" << std::endl;
 	std::cout << "-----------------------------------------------------------" << std::endl;
 	std::cout << "G++ " << __GNUC__ << "." << __GNUC_MINOR__ << "." << __GNUC_PATCHLEVEL__ << " - https://gcc.gnu.org/" << std::endl;
 	std::cout << "Curl " << LIBCURL_VERSION << " - https://curl.haxx.se/" << std::endl;

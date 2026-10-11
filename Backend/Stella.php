@@ -1,6 +1,6 @@
-<?php // (c) 2022 Pttn (https://riecoin.dev/en/StellaPool)
+<?php // (c) 2022-present The Riecoin Developers (https://riecoin.xyz/StellaPool/)
 
-$confPath = '../Pool/Pool.conf';
+$confPath = 'Pool.conf';
 $domain = '127.0.0.1';
 $cookieSecure = false;
 
@@ -48,28 +48,33 @@ class RiecoinRPC {
 }
 
 function isAlphaNumSpaces($str) {
-	return strlen($str) === 0 || preg_match('/^[a-zA-Z0-9ĉĝĵŝŭĈĜĴŜŬ\040]+$/', $str);
+	return strlen($str) === 0 || preg_match('/^[a-zA-Z0-9\040]+$/', $str);
 }
 const minUsernameLength = 3;
 const maxUsernameLength = 20;
-const maxAddresses = 8;
-const maxTokens = 16;
+const maxAddresses = 16;
+const maxTokens = 64;
 const maxTokenNameLength = 32;
 
+const movementsDuration = 2592000;
+const powcDuration = 604800;
+const roundScoresPruning = 0; // n > 0: delete Scores of older Rounds, only keep for the latest n Rounds
+
 class Stella {
-	private $options;
-	private $database;
-	private $riecoinRPC;
+	public readonly array $options;
+	public readonly PDO $database;
+	public readonly RiecoinRPC $riecoinRPC;
 	
-	private $currentIp;
-	private $currentUserId;
+	public readonly string $currentIp;
+	public readonly int $currentUserId;
+	public readonly int $currentUserSessionExpiration;
 	
 	public function __construct($confPath) {
 		try {
-			$configurationFile = file_get_contents(__DIR__ . '/' . $confPath);
+			$configurationFile = file_get_contents($confPath);
 			if ($configurationFile == false)
-				throw new Exception('Could not read the configuration file');
-			$this->options = array();
+				throw new Exception('Could not read the configuration file ' . $confPath);
+			$options = array();
 			$lines = explode("\n", $configurationFile);
 			foreach ($lines as &$line) {
 				if (strlen($line) == 0)
@@ -78,9 +83,9 @@ class Stella {
 					continue;
 				$keyValue = explode('=', $line, 2);
 				if (count($keyValue) == 2)
-					$this->options[trim($keyValue[0])] = trim($keyValue[1]);
+					$options[trim($keyValue[0])] = trim($keyValue[1]);
 			}
-			$this->database = new PDO('mysql:host=' . ($this->options['DatabaseHost'] ?? '127.0.0.1') . ':' . ($this->options['DatabasePort'] ?? 3306) . ';dbname=' . $this->options['DatabaseName'] . ';', $this->options['DatabaseUsername'], $this->options['DatabasePassword'], [
+			$this->database = new PDO('mysql:host=' . ($options['DatabaseHost'] ?? '127.0.0.1') . ':' . ($options['DatabasePort'] ?? 3306) . ';dbname=' . $options['DatabaseName'] . ';', $options['DatabaseUsername'], $options['DatabasePassword'], [
 				PDO::ATTR_EMULATE_PREPARES   => false,
 				PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
 				PDO::MYSQL_ATTR_FOUND_ROWS   => true,
@@ -97,27 +102,29 @@ class Stella {
 				$this->options['WalletPassword'] = $userPass[1];
 			}
 			$this->riecoinRPC = new RiecoinRPC(array(
-				'rpcuser' => $this->options['WalletUsername'],
-				'rpcpassword' => $this->options['WalletPassword'],
-				'rpcip' => $this->options['WalletHost'] ?? "127.0.0.1",
-				'rpcport' => $this->options['WalletPort'] ?? 28332,
-				'walletname' => $this->options['WalletName']));
-			$this->currentIp = $_SERVER['REMOTE_ADDR'];
-			$this->currentUserId = null;
+				'rpcuser' => $options['WalletUsername'],
+				'rpcpassword' => $options['WalletPassword'],
+				'rpcip' => $options['WalletHost'] ?? "127.0.0.1",
+				'rpcport' => $options['WalletPort'] ?? 28332,
+				'walletname' => $options['WalletName']));
+			$this->options = $options;
+			$this->currentIp = $_SERVER['REMOTE_ADDR'] ?? '127.0.0.1';
 			if (!empty($_COOKIE['session'])) {
 				if (strlen($_COOKIE['session']) != 64 || !ctype_xdigit($_COOKIE['session']))
 					$this->unsetSessionCookie();
 				else {
 					$tokenHash = hash('sha256', hex2bin($_COOKIE['session']), true);
 					try {
-						$statement = $this->database->prepare('SELECT userId FROM Sessions WHERE tokenHash = :tokenHash');
+						$statement = $this->database->prepare('SELECT userId, expiration FROM Sessions WHERE tokenHash = :tokenHash');
 						$statement->bindValue(':tokenHash', $tokenHash, PDO::PARAM_LOB);
 						$statement->execute();
-						$userId = $statement->fetch()['userId'] ?? false;
+						$sessionData = $statement->fetch();
+						$userId = $sessionData['userId'] ?? null;
 						if (!is_int($userId))
 							$this->unsetSessionCookie();
 						else {
 							$this->currentUserId = $userId;
+							$this->currentUserSessionExpiration = $sessionData['expiration'];
 							$statement = $this->database->prepare('UPDATE Users SET lastSeen = :now WHERE id = :userId');
 							$statement->bindValue(':now', time(), PDO::PARAM_INT);
 							$statement->bindValue(':userId', $this->currentUserId, PDO::PARAM_INT);
@@ -133,12 +140,12 @@ class Stella {
 		}
 	}
 	
-	private function logEvent($type, $details) {
+	public function logEvent($type, $details) {
 		try {
 			$statement = $this->database->prepare('INSERT INTO Events (time, ip, userId, type, details) VALUES (:now, :ip, :userId, :type, :details)');
 			$statement->bindValue(':now', time(), PDO::PARAM_INT);
 			$statement->bindValue(':ip', $this->currentIp, PDO::PARAM_STR);
-			$statement->bindValue(':userId', $this->currentUserId, PDO::PARAM_INT);
+			$statement->bindValue(':userId', $this->currentUserId ?? null, PDO::PARAM_INT);
 			$statement->bindValue(':type', $type, PDO::PARAM_STR);
 			$statement->bindValue(':details', $details, PDO::PARAM_STR);
 			$statement->execute();
@@ -150,7 +157,7 @@ class Stella {
 	public function unsetSessionCookie() {global $domain, $cookieSecure;
 		setcookie('session', '', time() - 1, '/', $domain, $cookieSecure, true);
 	}
-	public function loggedIn() {return is_int($this->currentUserId);}
+	public function loggedIn() {return isset($this->currentUserId);}
 	public function getCurrentUserId() {return $this->currentUserId;}
 	public function getCurrentUser() {
 		if ($this->loggedIn()) {
@@ -173,6 +180,7 @@ class Stella {
 			throw new Exception('User not found');
 		return $user;
 	}
+	
 	public function getUserByUsername($username) {
 		$statement = $this->database->prepare('SELECT * FROM Users WHERE username = :username');
 		$statement->bindValue(':username', $username, PDO::PARAM_STR);
@@ -220,7 +228,7 @@ class Stella {
 			$statement->bindValue(':username', $username, PDO::PARAM_STR);
 			$statement->execute();
 			if ($statement->fetch()['COUNT(*)'] !== 0)
-				throw new Exception('Username already taken');
+				throw new Exception('Unavailable or Deleted Username');
 			return true;
 		}
 		catch (Exception $e) {
@@ -233,13 +241,16 @@ class Stella {
 				throw new Exception('Invalid Riecoin address');
 			if (!ctype_alnum($address))
 				throw new Exception('Invalid Riecoin address');
-			$getaddressinfoResponse = $this->riecoinRPC->getaddressinfo($address);
-			$addressResponse = $getaddressinfoResponse['address'] ?? null;
-			$isWitnessAddress = $getaddressinfoResponse['iswitness'] ?? null;
-			if ($address !== $addressResponse)
-				throw new Exception('Invalid Riecoin address');
-			if ($isWitnessAddress !== true)
-				throw new Exception('Not a Bech32 address');
+			try {
+				$addressInfo = $this->riecoinRPC->getaddressinfo($address);
+				if (!isset($addressInfo['address']) || !isset($addressInfo['iswitness']))
+					throw new Exception('Invalid Riecoin Address');
+				if ($addressInfo['iswitness'] !== true)
+					throw new Exception('Not a Bech32M Riecoin Address');
+			}
+			catch (Exception $e) {
+				return $e->getMessage();
+			}
 			if ($checkExistence === false)
 				return true;
 			$statement = $this->database->prepare('SELECT COUNT(*) FROM RiecoinAddresses WHERE address = :address');
@@ -273,13 +284,31 @@ class Stella {
 	public function checkCodeByUserId($userId, $code) {
 		try {
 			$addresses = $this->getAddresses($userId);
-			if (count($addresses) == 0)
+			if (count($addresses) === 0)
 				throw new Exception('The user does not exist');
 			foreach ($addresses as &$address) {
 				if ($this->checkCode($address, $code) === true)
 					return true;
 			}
-			return 'Invalid code';
+			throw new Exception('Invalid Code, or Address not set for 2FA');
+		}
+		catch (Exception $e) {
+			return $e->getMessage();
+		}
+	}
+	public function changeUsername($code, $newUsername) {
+		try {
+			$status = $this->checkCodeByUserId($this->currentUserId, $code);
+			if ($status !== true)
+				throw new Exception('Invalid Code');
+			$status = $this->checkUsername($newUsername);
+			if ($status !== true)
+				throw new Exception($status);
+			$statement = $this->database->prepare('UPDATE Users SET username = :username WHERE id = :userId');
+			$statement->bindValue(':username', $newUsername, PDO::PARAM_STR);
+			$statement->bindValue(':userId', $this->currentUserId, PDO::PARAM_INT);
+			$statement->execute();
+			return true;
 		}
 		catch (Exception $e) {
 			return $e->getMessage();
@@ -295,8 +324,8 @@ class Stella {
 				$status = $this->checkCode($address, $code);
 			if ($status !== true)
 				throw new Exception($status);
-			$this->database->query('START TRANSACTION;');
-			$statement = $this->database->prepare('INSERT INTO Users(registrationTime, username, balance, powc) VALUES(:now, :username, 0, 0);');
+			$this->database->beginTransaction();
+			$statement = $this->database->prepare('INSERT INTO Users(registrationTime, username) VALUES(:now, :username);');
 			$statement->bindValue(':now', time(), PDO::PARAM_INT);
 			$statement->bindValue(':username', $username, PDO::PARAM_STR);
 			$statement->execute();
@@ -305,7 +334,7 @@ class Stella {
 			$statement->bindValue(':address', $address, PDO::PARAM_STR);
 			$statement->bindValue(':userId', $userId, PDO::PARAM_INT);
 			$statement->execute();
-			$this->database->query('COMMIT;');
+			$this->database->commit();
 			$this->logEvent('createUser', 'Created user ' . $username . ', Id ' . $userId);
 			return true;
 		}
@@ -314,7 +343,7 @@ class Stella {
 			return $e->getMessage();
 		}
 	}
-	public function deleteUser($code) {
+	public function deleteOwnAccount($code) {
 		try {
 			$status = $this->checkCodeByUserId($this->currentUserId, $code);
 			if ($status !== true)
@@ -336,8 +365,8 @@ class Stella {
 				throw new Exception('Invalid duration');
 			if (intval($duration) < 60)
 				throw new Exception('Duration must be >= 60 s');
-			if (intval($duration) > 157784760)
-				throw new Exception('Duration must be <= 5 years');
+			if (intval($duration) > 315569520)
+				throw new Exception('Duration must be <= 10 years');
 			$userId = $this->getUserIdByUsername($username);
 			$status = $this->checkCodeByUserId($userId, $code);
 			if ($status !== true)
@@ -392,10 +421,12 @@ class Stella {
 	public function addAddress($address, $code) {
 		try {
 			$status = $this->checkRiecoinAddress($address, true);
-			if ($status === true)
-				$status = $this->checkCode($address, $code);
 			if ($status !== true)
 				throw new Exception($status);
+			$status = $this->checkCode($address, $code);
+			if ($status !== true)
+				throw new Exception('Invalid Code, ensure that your Clock is <a href="https://time.gov/">synced</a>, or check that there are no trailing Spaces.</a>.');
+			$address = strtolower($address);
 			$statement = $this->database->prepare('SELECT COUNT(*) FROM RiecoinAddresses WHERE userId = :userId');
 			$statement->bindValue(':userId', $this->currentUserId, PDO::PARAM_INT);
 			$statement->execute();
@@ -425,7 +456,7 @@ class Stella {
 			$statement->execute();
 			$addressUserId = $statement->fetch()['userId'] ?? null;
 			if ($addressUserId !== $this->currentUserId)
-				throw new Exception('The Riecoin address is invalid or not associated to this user');
+				throw new Exception('The Riecoin Address is invalid or not associated to this User');
 			$statement = $this->database->prepare('DELETE FROM RiecoinAddresses WHERE address = :address;');
 			$statement->bindValue(':address', $address, PDO::PARAM_STR);
 			$statement->execute();
@@ -439,7 +470,7 @@ class Stella {
 	}
 	
 	public function getTokens() {
-		$statement = $this->database->prepare('SELECT * FROM Tokens WHERE userId = :userId ORDER BY id DESC');
+		$statement = $this->database->prepare('SELECT * FROM Tokens WHERE userId = :userId ORDER BY name ASC');
 		$statement->bindValue(':userId', $this->currentUserId, PDO::PARAM_INT);
 		$statement->execute();
 		$tokens = array();
@@ -447,25 +478,22 @@ class Stella {
 			$tokens[] = $token;
 		return $tokens;
 	}
-	public function createToken($duration, $powcLimit, $name, $code) {
+	public function createToken($duration, $powcLimit, $name) {
 		try {
 			if (intval($duration) == 0)
 				throw new Exception('Invalid duration');
 			if (intval($duration) < 60)
 				throw new Exception('Duration must be >= 60 s');
-			if (intval($duration) > 157784760)
-				throw new Exception('Duration must be <= 5 years');
+			if (intval($duration) > 315569520)
+				throw new Exception('Duration must be <= 10 years');
 			if (!is_numeric($powcLimit))
 				throw new Exception('Invalid PoWc Limit');
-			if ($powcLimit < 0.001)
-				throw new Exception('PoWc Limit must be >= 0.001');
+			if ($powcLimit < 0.)
+				throw new Exception('Invalid PoWc Limit');
 			if (strlen($name) > maxTokenNameLength)
 				throw new Exception('The name is too long');
 			if (!isAlphaNumSpaces($name))
 				throw new Exception('The name can only be alphanumeric with spaces');
-			$status = $this->checkCodeByUserId($this->currentUserId, $code);
-			if ($status !== true)
-				throw new Exception($status);
 			$statement = $this->database->prepare('SELECT COUNT(*) FROM Tokens WHERE userId = :userId');
 			$statement->bindValue(':userId', $this->currentUserId, PDO::PARAM_INT);
 			$statement->execute();
@@ -507,15 +535,27 @@ class Stella {
 			return $e->getMessage();
 		}
 	}
+	public function deleteTokenApi($token) {
+		try {
+			$tokenHash = hash('sha256', hex2bin($token), true);
+			$statement = $this->database->prepare('DELETE FROM Tokens WHERE hash = :tokenHash;');
+			$statement->bindValue(':tokenHash', $tokenHash, PDO::PARAM_LOB);
+			$statement->execute();
+			$this->logEvent('deleteToken', 'Successfully deleted token, hash ' . $tokenHash);
+			return true;
+		}
+		catch (Exception $e) {
+			$this->logEvent('deleteTokenFail', $e->getMessage());
+			return $e->getMessage();
+		}
+	}
 	
 	public function getBalance() {
-		$statement = $this->database->prepare('SELECT balance FROM Users WHERE id = :userId');
+		$statement = $this->database->prepare('SELECT SUM(value) FROM RiecoinMovements WHERE userId = :userId');
 		$statement->bindValue(':userId', $this->currentUserId, PDO::PARAM_INT);
 		$statement->execute();
 		$user = $statement->fetch();
-		if (!is_numeric($user['balance']))
-			throw new Exception('User not found or invalid');
-		return floor(1e8*$user['balance'])/1e8;
+		return floor(1e8*($user['SUM(value)'] ?? 0.))/1e8;
 	}
 	public function getBalanceAddress($address) {
 		$statement = $this->database->prepare('SELECT SUM(value) FROM RiecoinMovements WHERE address = :address;');
@@ -529,7 +569,7 @@ class Stella {
 		return $data['SUM(value)'];
 	}
 	public function getRiecoinTransactions() {
-		$statement = $this->database->prepare('SELECT * FROM RiecoinMovements WHERE userId = :userId ORDER BY id DESC');
+		$statement = $this->database->prepare('SELECT *, SUM(value) OVER(ORDER BY time ASC, id ASC) AS balance FROM RiecoinMovements WHERE userId = :userId ORDER BY time DESC, id DESC');
 		$statement->bindValue(':userId', $this->currentUserId, PDO::PARAM_INT);
 		$statement->execute();
 		return $statement;
@@ -545,7 +585,7 @@ class Stella {
 			$amount = $this->getBalanceAddress($address);
 			if ($amount <= 0.)
 				throw new Exception('Address balance is empty');
-			$this->database->query('START TRANSACTION;');
+			$this->database->beginTransaction();
 			$statement = $this->database->prepare('DELETE FROM RiecoinMovements WHERE address = :address');
 			$statement->bindValue(':address', $address, PDO::PARAM_STR);
 			$statement->execute();
@@ -553,11 +593,7 @@ class Stella {
 			$statement->bindValue(':amount', $amount, PDO::PARAM_STR);
 			$statement->bindValue(':userId', $this->currentUserId, PDO::PARAM_INT);
 			$statement->execute();
-			$statement = $this->database->prepare('UPDATE Users SET balance = balance + :amount WHERE id = :userId');
-			$statement->bindValue(':amount', $amount, PDO::PARAM_STR);
-			$statement->bindValue(':userId', $this->currentUserId, PDO::PARAM_INT);
-			$statement->execute();
-			$this->database->query('COMMIT');
+			$this->database->commit();
 			$this->logEvent('moveBalance', $amount . ' RIC from ' . $address . ' moved to User ' . $this->currentUserId);
 			return true;
 		}
@@ -573,13 +609,11 @@ class Stella {
 		$statement->execute();
 		return $statement;
 	}
-	public function withdraw($amount, $address, $code) {
+	public function withdraw($amount, $address) {
 		try {
 			if (!is_numeric($amount))
 				throw new Exception('Invalid amount');
 			$status = $this->checkRiecoinAddress($address);
-			if ($status === true)
-				$status = $this->checkCodeByUserId($this->currentUserId, $code);
 			if ($status !== true)
 				throw new Exception($status);
 			$balance = $this->getBalance();
@@ -589,39 +623,59 @@ class Stella {
 				throw new Exception('Amount must be at least ' . $this->options['WithdrawalMinimum'] . ' RIC');
 			if ($amount > $balance)
 				throw new Exception('Amount exceeds the balance');
-			$this->database->query('START TRANSACTION');
-			if ($amount + 0.00000001 < $balance) {
-				$statement = $this->database->prepare('INSERT INTO RiecoinMovements (time, value, userId, comment) VALUES (:now, :value, :userId, "Manual Withdrawal")');
-				$statement->bindValue(':now', time(), PDO::PARAM_INT);
-				$statement->bindValue(':value', -$amount, PDO::PARAM_STR);
-				$statement->bindValue(':userId', $this->currentUserId, PDO::PARAM_INT);
-				$statement->execute();
-				$statement = $this->database->prepare('UPDATE Users SET balance = balance - :amount WHERE id = :userId');
-				$statement->bindValue(':amount', $amount, PDO::PARAM_STR);
-				$statement->bindValue(':userId', $this->currentUserId, PDO::PARAM_INT);
-				$statement->execute();
-			}
-			else {
-				$statement = $this->database->prepare('DELETE FROM RiecoinMovements WHERE userId = :userId');
-				$statement->bindValue(':userId', $this->currentUserId, PDO::PARAM_INT);
-				$statement->execute();
-				$statement = $this->database->prepare('INSERT INTO RiecoinMovements (time, value, userId, comment) VALUES (:now, 0., :userId, :comment)');
-				$statement->bindValue(':now', time(), PDO::PARAM_INT);
-				$statement->bindValue(':userId', $this->currentUserId, PDO::PARAM_INT);
-				$statement->bindValue(':comment', 'All the ' . $amount . ' RIC were withdrawn.', PDO::PARAM_STR);
-				$statement->execute();
-				$statement = $this->database->prepare('UPDATE Users SET balance = 0. WHERE id = :userId');
-				$statement->bindValue(':userId', $this->currentUserId, PDO::PARAM_INT);
-				$statement->execute();
-			}
+			$address = strtolower($address);
+			$this->database->beginTransaction();
+			$statement = $this->database->prepare('INSERT INTO RiecoinMovements (time, value, userId, comment) VALUES (:now, :value, :userId, "Manual Withdrawal")');
+			$statement->bindValue(':now', time(), PDO::PARAM_INT);
+			$statement->bindValue(':value', -$amount, PDO::PARAM_STR);
+			$statement->bindValue(':userId', $this->currentUserId, PDO::PARAM_INT);
+			$statement->execute();
 			$statement = $this->database->prepare('INSERT INTO Withdrawals (time, amount, userId, address, comment) VALUES (:now, :amount, :userId, :address, "Manual Withdrawal")');
 			$statement->bindValue(':now', time(), PDO::PARAM_INT);
 			$statement->bindValue(':amount', $amount - $withdrawalFee, PDO::PARAM_STR);
 			$statement->bindValue(':userId', $this->currentUserId, PDO::PARAM_INT);
 			$statement->bindValue(':address', $address, PDO::PARAM_STR);
 			$statement->execute();
-			$this->database->query('COMMIT');
+			$this->database->commit();
 			$this->logEvent('withdraw', $amount . ' RIC to ' . $address);
+			return true;
+		}
+		catch (Exception $e) {
+			$this->logEvent('withdrawFail', $e->getMessage());
+			return $e->getMessage();
+		}
+	}
+	public function sendToUser($amount, $recipientUsername, $message) {
+		try {
+			if (!is_numeric($amount))
+				throw new Exception('Invalid Amount');
+			if (strlen($message) > 96)
+				throw new Exception('Too long Message');
+			$recipientUserId = $this->getUserIdByUsername($recipientUsername);
+			if ($recipientUserId == $this->currentUserId)
+				throw new Exception('Cannot transfer to oneself');
+			$senderUsername = $this->getUserById($this->currentUserId)['username'];
+			$balance = $this->getBalance();
+			$withdrawalMinimum = $this->options['WithdrawalMinimum']/2;
+			if ($amount < $withdrawalMinimum)
+				throw new Exception('Amount must be at least ' . $this->options['WithdrawalMinimum']/2 . ' RIC');
+			if ($amount > $balance)
+				throw new Exception('Amount exceeds the balance');
+			$this->database->beginTransaction();
+			$statement = $this->database->prepare('INSERT INTO RiecoinMovements (time, value, userId, comment) VALUES (:now, :value, :userId, :comment)');
+			$statement->bindValue(':now', time(), PDO::PARAM_INT);
+			$statement->bindValue(':value', -$amount, PDO::PARAM_STR);
+			$statement->bindValue(':userId', $this->currentUserId, PDO::PARAM_INT);
+			$statement->bindValue(':comment', "To " . $recipientUsername . ": " . $message, PDO::PARAM_STR);
+			$statement->execute();
+			$statement = $this->database->prepare('INSERT INTO RiecoinMovements (time, value, userId, comment) VALUES (:now, :value, :userId, :comment)');
+			$statement->bindValue(':now', time(), PDO::PARAM_INT);
+			$statement->bindValue(':value', $amount, PDO::PARAM_STR);
+			$statement->bindValue(':userId', $recipientUserId, PDO::PARAM_INT);
+			$statement->bindValue(':comment', "From " . $senderUsername . ": " . $message, PDO::PARAM_STR);
+			$statement->execute();
+			$this->database->commit();
+			$this->logEvent('transfer', $amount . ' RIC from ' . $senderUsername . ' to ' . $recipientUsername);
 			return true;
 		}
 		catch (Exception $e) {
@@ -653,7 +707,7 @@ class Stella {
 		return $powc;
 	}
 	public function getPowCreditsMovements() {
-		$statement = $this->database->prepare('SELECT * FROM PoWcMovements WHERE userId = :userId ORDER BY id DESC');
+		$statement = $this->database->prepare('SELECT * FROM PoWcMovements WHERE userId = :userId ORDER BY time DESC');
 		$statement->bindValue(':userId', $this->currentUserId, PDO::PARAM_INT);
 		$statement->execute();
 		return $statement;
@@ -669,14 +723,14 @@ class Stella {
 		);
 	}
 	public function consumePoWc($tokenHex, $amount, $comment) {
-		if ($amount < 0.001)
-			throw new Exception('Cannot deduct less than 0.001 PoWc');
+		if ($amount < 0.0001)
+			throw new Exception('Cannot deduct less than 0.0001 PoWc');
 		if ($amount > 1.)
 			throw new Exception('Cannot deduct more than 1 PoWc');
 		$user = $this->getUserByToken($tokenHex);
 		if ($amount > min($user['powc']['total'], $user['powcLimit']))
 			throw new Exception('Insufficient PoWc');
-		$this->database->query('START TRANSACTION');
+		$this->database->beginTransaction();
 		$tokenHash = hash('sha256', hex2bin($tokenHex), true);
 		$remainingAmount = $amount;
 		foreach ($user['powc']['amounts'] as &$powc) {
@@ -702,13 +756,13 @@ class Stella {
 		$statement->bindValue(':userId', $user['id'], PDO::PARAM_INT);
 		$statement->bindValue(':comment', htmlspecialchars($comment), PDO::PARAM_STR);
 		$statement->execute();
-		$this->database->query('COMMIT;');
+		$this->database->commit();
 		return true;
 	}
 	
 	public function getBlockchainInfo() {
 		$blockchainInfo = $this->riecoinRPC->getblockchaininfo();
-		$blockchainInfo['miningpower'] = $this->riecoinRPC->getnetworkminingpower();
+		$blockchainInfo['miningpower'] = $this->riecoinRPC->getnetworkminingpower(30);
 		$blockchainInfo['connections'] = $this->riecoinRPC->getconnectioncount();
 		return $blockchainInfo;
 	}
@@ -723,7 +777,7 @@ class Stella {
 		$info['poolAddress'] = $this->options['PoolAddress'];
 		$statement = $this->database->query('SELECT COUNT(*) FROM Rounds WHERE State = 1');
 		$info['blocksFound'] = $statement->fetch()['COUNT(*)'];
-		$statement = $this->database->query('SELECT heightEnd, blockHash FROM Rounds WHERE State = 1 ORDER BY id DESC LIMIT 1');
+		$statement = $this->database->query('SELECT heightEnd, blockHash FROM Rounds WHERE State < 2 AND heightEnd IS NOT NULL ORDER BY id DESC LIMIT 1');
 		$info['latestKnownBlockHeight'] = $blockchainInfo['blocks'];
 		$latestBlock = $statement->fetch();
 		if ($latestBlock != false) {
@@ -762,6 +816,12 @@ class Stella {
 		$round = $statement->fetch();
 		if (!isset($round['id']))
 			throw new Exception('Round not found');
+		$round['scores'] = array();
+		$statement = $this->database->prepare('SELECT miner, points FROM RoundScores WHERE roundId = :roundId');
+		$statement->bindValue(':roundId', $roundId, PDO::PARAM_INT);
+		$statement->execute();
+		while ($score = $statement->fetch())
+			$round['scores'][$score['miner']] = $score['points'];
 		return $round;
 	}
 	

@@ -1,8 +1,8 @@
-<?php // (c) 2022 Pttn (https://riecoin.dev/en/StellaPool)
+<?php // (c) 2022-present The Riecoin Developers (https://riecoin.xyz/StellaPool/)
 /*ini_set('display_errors', '1');
 error_reporting(-1);*/
 
-require_once('Stella.php');
+require_once('../Backend/Stella.php');
 $stella = new Stella($confPath);
 
 function htmlTop($title) {
@@ -12,9 +12,16 @@ function htmlTop($title) {
 	<head>
 		<meta charset="utf-8"/>
 		<style>
-			body, input, select, button {
+			body {
 				color: #C0C0C0;
-				background: #000000;
+				background-color: rgb(16, 0, 24);
+			}
+			input, button, select {
+				color: rgba(255, 255, 255, 0.83);
+				border: 1px solid rgba(255, 255, 255, 0.5);
+				background: rgba(255, 255, 255, 0.08);
+				font-size: 1em;
+				padding: 0.125em;
 			}
 			a {
 				color: #C0C0C0;
@@ -44,7 +51,7 @@ function htmlTop($title) {
 				box-sizing: border-box;
 			}
 		</style>
-		<link rel="shortcut icon" href="Riecoin.svg"/>
+		<link rel="icon" href="Riecoin.svg"/>
 		<title>StellaPool - <?php echo $title;?></title>
 	</head>
 	<body>
@@ -69,7 +76,7 @@ function htmlBottom() {
 ?>
 		</main>
 		<hr>
-		<footer>(c) 2022 - Pttn | <a href="https://riecoin.dev/en/StellaPool">Project Page</a></footer>
+		<footer>(c) 2022 - The Riecoin Developers | <a href="https://riecoin.xyz/StellaPool">Project Page</a></footer>
 	</body>
 </html>
 <?php
@@ -81,12 +88,13 @@ if ($page === 'round') {
 		$roundId = intval($_GET['id'] ?? 0);
 		$currentRoundId = $stella->getCurrentRoundId();
 		$round = $stella->getRound($roundId);
-		$scores = json_decode($round['scores'], true)['scores'];
+		$scores = $round['scores'];
 		$timeStart = $round['timeStart'];
 		$timeEnd = $round['timeEnd'] ?? time();
 		$state = $round['state'];
+		$archived = (count($round['scores']) == 0);
 		if (!isset($round['finder']))
-			$blockTemplate = $stella->riecoinRPC()->getblocktemplate(array('rules' => array('segwit')));
+			$blockTemplate = $stella->riecoinRPC()->getblocktemplate(array('rules' => array()));
 		else {
 			$finder = $round['finder'];
 			if (ctype_digit($finder)) {
@@ -152,41 +160,43 @@ if ($page === 'round') {
 		echo '<tr><th>Miners</th><td>' . count($scores) . '</td></tr>';
 		echo '</table>';
 		
-		echo '<h2>Participating Miners</h2>';
-		
-		echo '<table>';
-		echo '<tr>';
-		echo '<th>Miner</th>';
-		echo '<th>Score</th>';
-		echo '<th>%</th>';
-		echo '</tr>';
-		$scoreTotal = 0;
-		foreach ($scores as &$scoreEntry)
-			$scoreTotal += $scoreEntry['score'];
-		foreach ($scores as &$scoreEntry) {
-			echo '<tr style="text-align: right;">';
-			$miner = $scoreEntry['miner'];
-			if (ctype_digit($miner)) {
-				try {
-					$user = $stella->getUserById(intval($miner));
-					if (isset($user['username']))
-						$miner = $user['username'];
-				}
-				catch (Exception $e) {
-					$miner = 'Deleted user';
-				}
-			}
-			echo '<td>' . $miner . '</td>';
-			echo '<td>' . $scoreEntry['score'] . '</td>';
-			echo '<td>' . sprintf('%.3f', 100.*$scoreEntry['score']/$scoreTotal) . '</td>';
+		if (!$archived) {
+			echo '<h2>Participating Miners</h2>';
+			
+			echo '<table>';
+			echo '<tr>';
+			echo '<th>Miner</th>';
+			echo '<th>Score</th>';
+			echo '<th>%</th>';
 			echo '</tr>';
+			$scoreTotal = 0;
+			foreach ($scores as $miner => $points)
+				$scoreTotal += $points;
+			foreach ($scores as $miner => $points) {
+				echo '<tr style="text-align: right;">';
+				$miner = $miner;
+				if (is_numeric($miner)) {
+					try {
+						$user = $stella->getUserById(intval($miner));
+						if (isset($user['username']))
+							$miner = $user['username'];
+					}
+					catch (Exception $e) {
+						$miner = 'Deleted user';
+					}
+				}
+				echo '<td>' . $miner . '</td>';
+				echo '<td>' . sprintf('%.2f', $points) . '</td>';
+				echo '<td>' . sprintf('%.3f', 100.*$points/$scoreTotal) . '</td>';
+				echo '</tr>';
+			}
+			echo '<tr style="text-align: right; border-top: solid 2px;">';
+			echo '<td>Total</td>';
+			echo '<td>' . $scoreTotal . '</td>';
+			echo '<td>' . sprintf('%.3f', 100.) . '</td>';
+			echo '</tr>';
+			echo '</table>';
 		}
-		echo '<tr style="text-align: right; border-top: solid 2px;">';
-		echo '<td>Total</td>';
-		echo '<td>' . $scoreTotal . '</td>';
-		echo '<td>' . sprintf('%.3f', 100.) . '</td>';
-		echo '</tr>';
-		echo '</table>';
 	}
 	catch (Exception $e) {
 		htmlTop('Bad Round');
@@ -228,12 +238,12 @@ else if ($page === 'register') {
 					<tr>
 						<td>Riecoin Address</td>
 						<td><input name="address" value="<?php echo htmlspecialchars($_POST['address'] ?? '');?>"/> </td>
-						<td>Only Bech32 ric1q... You must own this address and be able to generate codes with it.</td>
+						<td>Only Bech32M ric1... You must own this address and be able to generate codes with it.</td>
 					</tr>
 					<tr>
 						<td>Code</td>
 						<td><input name="code"/></td>
-						<td>Use the Riecoin Core's Code Generator (version 22.02+)</td>
+						<td>Use the Riecoin Core's Code Generator</td>
 					</tr>
 					<tr>
 						<td colspan="2"><button>Register</button></td>
@@ -248,8 +258,8 @@ else if ($page === 'register') {
 		<h2>Security tips</h2>
 		
 		<ul>
-			<li>You are responsible to keep your private keys secret;</li>
-			<li>Never enter a code in places other than the site managing your account, always check the domain before entering your code;</li>
+			<li>You are responsible to keep your private keys secret.</li>
+			<li>Never enter a code in places other than the site managing your account, always check the domain before entering your code.</li>
 			<li>You should register different Riecoin Addresses if you create such accounts in several sites.</li>
 		</ul>
 <?php
@@ -372,15 +382,15 @@ else if ($page === 'account') {
 			else
 				echo '<p class="successMessage">Successfully moved balance</p>';
 		}
-		if ($accountAction === 'withdraw' && isset($_POST['address'], $_POST['amount'], $_POST['code'])) {
-			$status = $stella->withdraw($_POST['amount'], $_POST['address'], $_POST['code']);
+		if ($accountAction === 'withdraw' && isset($_POST['address'], $_POST['amount'])) {
+			$status = $stella->withdraw($_POST['amount'], $_POST['address']);
 			if ($status !== true)
 				echo '<p class="errorMessage">Could not withdraw Riecoins: ' . $status . '</p>';
 			else
 				echo '<p class="successMessage">Withdrawal successful</p>';
 		}
 		if ($accountAction === 'deleteAccount') {
-			$status = $stella->deleteUser($_POST['code']);
+			$status = $stella->deleteOwnAccount($_POST['code']);
 			if ($status !== true)
 				echo '<p class="errorMessage">Account deletion failed: ' . $status . '</p>';
 			else {
@@ -546,7 +556,6 @@ else if ($page === 'account') {
 		<ul>
 			<li>Minimum <?php echo $stella->option('WithdrawalMinimum');?> RIC;</li>
 			<li>Fee of <?php echo $stella->option('WithdrawalFee');?> RIC, so if you withdraw 100 RIC, the destination will get <?php echo 100. - $stella->option('WithdrawalFee');?> RIC;</li>
-			<li>If you withdraw everything, the account transaction history will be cleared.</li>
 		</ul>
 		
 		<form method="post"><input type="hidden" name="accountAction" value="withdraw"/>
@@ -562,10 +571,6 @@ else if ($page === 'account') {
 				<tr>
 					<td>Amount</td>
 					<td><input name="amount" style="width: 256px;"/> RIC</td>
-				</tr>
-				<tr>
-					<td>Code</td>
-					<td><input name="code" style="width: 384px;"/></td>
 				</tr>
 				<tr>
 					<td colspan="2" align="center"><button>Withdraw</button></td>
@@ -641,7 +646,7 @@ else if ($page === 'account') {
 else {
 	htmlTop('Main Page');
 	echo '<p>Welcome to our pool! Lorem Ipsum Bla Bla Bla</p>';
-	echo '<p>Useful information about pooled mining (definition of a share, earning calculations,...) can be found <a href="https://riecoin.dev/en/Stella">here</a>.</p>';
+	echo '<p>Useful information about pooled mining (definition of a share, earning calculations,...) can be found <a href="https://riecoin.xyz/Guides/Stella">here</a>.</p>';
 	echo '<p>Be sure to read the README.md. Also play with the interface to better undestand how things work.</p>';
 	echo '<p>It is now your job to make the pool work and look the way you want.</p>';
 	
@@ -651,7 +656,7 @@ else {
 	
 	echo '<p>Sample rieMiner configuration:</p>';
 	echo "<pre>Mode = Pool\nHost = " . $domain . "\nPort = " . $stella->option('PoolPort') . "\nUsername = username or Riecoin address\nPassword = Hex Token, needed only if using an account</pre>";
-	echo '<p><a href="https://riecoin.dev/en/rieMiner">rieMiner\'s page</a> (<a href="https://riecoin.dev/en/rieMiner/Pooled_Mining">pooled mining guide</a>, <a href="https://riecoin.dev/en/rieMiner/Benchmarks">benchmarks</a>)</p>';
+	echo '<p><a href="https://riecoin.xyz/rieMiner">rieMiner\'s page</a>, <a href="https://riecoin.xyz/rieMiner/Benchmarking">benchmarks</a></p>';
 	
 	echo '<h2>Fees</h2>';
 	

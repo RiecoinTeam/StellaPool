@@ -1,5 +1,4 @@
-// (c) 2018-2022 Pttn (https://riecoin.dev/en/StellaPool)
-// Lots of code taken from rieMiner (https://riecoin.dev/en/rieMiner).
+// (c) 2018-present The Riecoin Developers (https://riecoin.xyz/StellaPool/)
 
 #ifndef HEADER_tools_hpp
 #define HEADER_tools_hpp

@@ -8,27 +8,27 @@ StellaPool has been designed as a starting point for pool operators, and we enco
 
 ## Components
 
-The code is divided into two components.
+The code is written in C++ and PHP and divided into two components.
 
 ### Backend
 
-In the Pool folder, you will find C++ code for a backend responsible for allowing connections from miners, handling submitted shares, distributing earnings and processing payouts.
+In the Pool folder, you will find C++ and PHP code for a backend responsible for allowing connections from miners, handling submitted shares, distributing earnings and processing payouts.
 
 A ban system against misbehaving miners (too many invalid shares,...) is integrated.
 
-### Web Interface
+The files should remain inaccessible from the public.
 
-In the Web folder, you will find a PHP frontend code. It is a web interface displaying useful information like the Riecoin network status or round statistics. Accounts can also be created and managed, and withdrawals can be requested.
+### Public Folder
+
+This is the PHP frontend code. It is a web interface displaying useful information like the Riecoin network status or round statistics. Accounts can also be created and managed, and withdrawals can be requested.
 
 No administration panel is provided, you should be able to use something like PhpMyAdmin for manual interventions.
 
 The interface is minimalist and it is your job to make it look like the way you want.
 
-The backend must have been ran at least once (but no restart needed) before accessing the Web Interface.
-
 ## Accounts and PoW Credits
 
-Accounts are created using the Riecoin Core's Code Generator or compatible, allowing registration without any personal information like an email address or a password.
+Accounts are created using the Riecoin Core's Code Generator or compatible, allowing registration without any confidential information like an email address or a password.
 
 PoW Credits (PoWc) are points distributed to account owners, in accordance with the mining work provided, with the reference 1 PoWc = 1 Riecoin Block. They don't have any monetary value, but quantify the computational work recently done by a given user. The PoWc cannot be transmitted and are valid only 7 days, but may be "consumed" by services either provided by the pool or external ones that trust it.
 
@@ -69,9 +69,26 @@ Set up a MySQL or MariaDB server and create a database and optionally a user for
 
 Your host provider might already provide a database server, or you can setup one by yourself. In the latter case, there are plenty of tutorials explaining how to do this.
 
+For example,
+
+```bash
+mariadb
+Create Database Stella;
+Create User stella@localhost IDENTIFIED BY 'password';
+Grant All Privileges ON Stella.* TO stella@localhost;
+```
+
+### Init the Database
+
+Use the PHP Script to Init the Pool Database, adjust the Path below if needed.
+
+```bash
+php Backend/Maintenance.php initDatabase
+```
+
 ## Compile the backend
 
-You must have a recent enough Linux and an appropriate compiler with C++20 support. Other and old operating systems are not supported.
+You must have a recent enough Linux and an appropriate compiler with C++23 support. Other and old operating systems are not supported.
 
 ### On Debian/Ubuntu
 
@@ -82,18 +99,18 @@ You can get the source code with Git and compile this C++ program with g++ and m
 * [MySQL C++ Connector](https://dev.mysql.com/doc/connector-cpp/8.0/en/)
 * [NLohmann Json](https://json.nlohmann.me/)
 
-On Debian 11, you can easily install these by doing as root:
+On Debian 13, you can easily install these by doing as root:
 
 ```bash
 apt install g++ make git libcurl4-openssl-dev libgmp-dev libmysqlcppconn-dev nlohmann-json3-dev
 ```
 
-Then, download the source files, go/`cd` to the directory, and run `make`:
+Then, download the source files, go/`cd` to the directory, and build the C++ Backend:
 
 ```bash
 git clone https://github.com/Pttn/StellaPool.git
 cd StellaPool
-cd Pool
+cd Backend
 make
 ```
 
@@ -148,11 +165,19 @@ It is case sensitive. A line starting with `#` will be ignored, as well as inval
 * `DatabasePassword`: the database password. Default: empty;
 * `DatabaseUpdateInterval`: how often in s to update the database (store share scores,...). Default: 10.
 
+## Make a Maintenance Script
+
+A maintenance Script that deletes obsolete and other old data must be regularly run, please create a script running the following (adjust the Path if necessary) with a frequency in the order of magnitude of once per minute. Payment Processing will later also be moved here.
+
+```bash
+php Backend/Maintenance.php doMaintenance
+```
+
 ## Developers and license
 
 * [Pttn](https://github.com/Pttn), author and maintainer. You can reach me on the [Riecoin Forum](https://forum.riecoin.dev/).
 
-This work is released under the MIT license.
+This work is released under the [GPLv3](https://www.gnu.org/licenses/gpl-3.0.en.html) license.
 
 ### Versioning
 
@@ -162,12 +187,12 @@ The version naming scheme is 0.9, 0.99, 0.999 and so on for major versions, anal
 
 You are encouraged to discuss about improvements on the Riecoin Forum and make useful Pull Requests.
 
-By contributing to StellaPool, you accept to place your code under the MIT license.
+By contributing to StellaPool, you accept to place your code under the GPLv3 license.
 
 Donations welcome:
 
-* Riecoin: ric1qpttn5u8u9470za84kt4y0lzz4zllzm4pyzhuge
-* Bitcoin: bc1qpttn5u8u9470za84kt4y0lzz4zllzm4pwvel4c
+* Riecoin: ric1pstellap55ue6keg3ta2qwlxr0h58g66fd7y4ea78hzkj3r4lstrsk4clvn
+* Bitcoin: bc1pstellap55ue6keg3ta2qwlxr0h58g66fd7y4ea78hzkj3r4lstrsewte3f
 
 ### Quick contributor's checklist
 
